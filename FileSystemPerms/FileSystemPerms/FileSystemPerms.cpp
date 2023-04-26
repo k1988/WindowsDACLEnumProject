@@ -13,6 +13,10 @@ Released under AGPL see LICENSE.txt for more information
 
 #include "stdafx.h"
 #include "XGetopt.h"
+#include "sddl.h"
+#include <initializer_list>
+#include <map>
+#include <string>
 
 #define MAGIC (0xa0000000L)
 
@@ -20,6 +24,9 @@ Released under AGPL see LICENSE.txt for more information
 // Globals
 //
 bool	bExclude=false;
+
+// 是否打印sd的字符串形式
+bool bSDStr = false;
 
 //
 //
@@ -258,6 +265,75 @@ void PrintPermissions(PACL DACL, bool bFile)
 
 }
 
+// 打印文件中所有类型的SecurityDescriptor
+void PrintAllSecurityDescriptor(char* strFile)
+{
+	DWORD dwSize =0;
+	DWORD dwBytesNeeded =0;	
+
+    const std::initializer_list<SECURITY_INFORMATION> informationList =
+    {
+             OWNER_SECURITY_INFORMATION,
+             GROUP_SECURITY_INFORMATION,
+             DACL_SECURITY_INFORMATION,
+             SACL_SECURITY_INFORMATION,
+             LABEL_SECURITY_INFORMATION,
+             ATTRIBUTE_SECURITY_INFORMATION,
+             SCOPE_SECURITY_INFORMATION,
+             PROCESS_TRUST_LABEL_SECURITY_INFORMATION,
+             ACCESS_FILTER_SECURITY_INFORMATION,
+             BACKUP_SECURITY_INFORMATION,
+             PROTECTED_DACL_SECURITY_INFORMATION,
+             PROTECTED_SACL_SECURITY_INFORMATION,
+             UNPROTECTED_DACL_SECURITY_INFORMATION,
+             UNPROTECTED_SACL_SECURITY_INFORMATION
+    };
+	
+	static std::map<SECURITY_INFORMATION, const char*> security_information_map = {  
+    {OWNER_SECURITY_INFORMATION, "Owner Security Information"},  
+    {GROUP_SECURITY_INFORMATION, "Group Security Information"},  
+    {DACL_SECURITY_INFORMATION, "DACL Security Information"},  
+    {SACL_SECURITY_INFORMATION, "SACL Security Information"},  
+    {LABEL_SECURITY_INFORMATION, "Label Security Information"},  
+    {ATTRIBUTE_SECURITY_INFORMATION, "Attribute Security Information"},  
+    {SCOPE_SECURITY_INFORMATION, "Scope Security Information"},  
+    {PROCESS_TRUST_LABEL_SECURITY_INFORMATION, "Process Trust Label Security Information"},  
+    {ACCESS_FILTER_SECURITY_INFORMATION, "Access Filter Security Information"},  
+    {BACKUP_SECURITY_INFORMATION, "Backup Security Information"},  
+    {PROTECTED_DACL_SECURITY_INFORMATION, "Protected DACL Security Information"},  
+    {PROTECTED_SACL_SECURITY_INFORMATION, "Protected SACL Security Information"},  
+    {UNPROTECTED_DACL_SECURITY_INFORMATION, "Unspecified DACL Security Information"},  
+    {UNPROTECTED_SACL_SECURITY_INFORMATION, "Unspecified SACL Security Information"},  
+    };
+
+    for (const SECURITY_INFORMATION information : informationList)
+    {
+        const auto informationName = security_information_map[information];
+
+        GetFileSecurity(strFile, information, NULL, NULL, &dwBytesNeeded);
+        dwSize = dwBytesNeeded;
+        PSECURITY_DESCRIPTOR* secDesc = (PSECURITY_DESCRIPTOR*)LocalAlloc(LMEM_FIXED, dwBytesNeeded);
+        if (GetFileSecurity(strFile, information, secDesc, dwSize, &dwBytesNeeded) == false) 
+		{
+			 fprintf(stdout, "!! %x %s -> Failed %d\n", information, informationName, GetLastError());
+            continue;
+        }
+
+		// convert to string and print
+        LPTSTR pStringSecurityDescriptor = nullptr;
+        ULONG pStringSecurityDescriptorSize = 0;
+        ConvertSecurityDescriptorToStringSecurityDescriptor(secDesc, SDDL_REVISION_1, information, &pStringSecurityDescriptor, &pStringSecurityDescriptorSize);
+        if (pStringSecurityDescriptorSize > 1)
+        {
+            fprintf(stdout, "%x %s -> %s\n", information, informationName, pStringSecurityDescriptor);
+        }
+
+        LocalFree(pStringSecurityDescriptor);
+    }
+
+}
+
+// 获取文件的SD中类型为DACL_SECURITY_INFORMATION并且使用PrintPermissions打印所有的相关权限
 bool GetHandleBeforePrint(char* strFile){
 	DWORD dwSize =0;
 	DWORD dwBytesNeeded =0;
@@ -269,7 +345,7 @@ bool GetHandleBeforePrint(char* strFile){
 		fprintf(stdout,"[i] |\n");
 		fprintf(stdout,"[i] +-+-> Failed to query file system object security - %d\n",GetLastError());
 		return false;
-	}
+    }
 	
 	PACL DACL;
 	BOOL bDACLPresent = false;
@@ -309,7 +385,8 @@ bool ListFiles(char *strPath) {
 				char strFoo[MAX_PATH];
 				sprintf_s(strFoo,MAX_PATH,"%s\\%s",strPath,ffdThis.cFileName);
 				fprintf(stdout,"[directory] %s \n",strFoo);
-				GetHandleBeforePrint(strFoo);
+				GetHandleBeforePrint(strFoo);				
+				if (bSDStr) PrintAllSecurityDescriptor(strFoo);
 				ListFiles(strFoo);
             }
 			else 
@@ -318,6 +395,7 @@ bool ListFiles(char *strPath) {
 				sprintf_s(strFoo,MAX_PATH,"%s\\%s",strPath,ffdThis.cFileName);
 				fprintf(stdout,"[file] %s \n",strFoo);
 				GetHandleBeforePrint(strFoo);
+				if (bSDStr) PrintAllSecurityDescriptor(strFoo);
 			}
 		}
 	} while (FindNextFile(hFind, &ffdThis) != 0);
@@ -345,6 +423,7 @@ void PrintHelp(char *strExe){
 	fprintf (stdout,"    i.e. %s [-p] [-x] [-h]\n",strExe);
 	fprintf (stdout,"    -p [PATH] Path to use instead of C:\\\n");	
 	fprintf (stdout,"    -x exclude non mapped SIDs from alerts\n");
+	fprintf (stdout,"    -s print file's all type SD in string format\n");
 	fprintf (stdout,"\n");
 	ExitProcess(1);
 }
@@ -373,7 +452,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	printf("[*] -h for help \n");
 
 	// Extract all the options
-	while ((chOpt = getopt(argc, argv, _T("p:hx"))) != EOF) 
+	while ((chOpt = getopt(argc, argv, _T("p:hxs"))) != EOF) 
 	switch(chOpt)
 	{
 		case _T('p'):
@@ -384,6 +463,9 @@ int _tmain(int argc, _TCHAR* argv[])
 			break;
 		case _T('h'): // Help
 			bHelp=true;
+			break;
+		case _T('s'): 
+			bSDStr=true;
 			break;
 		default:
 			fwprintf(stderr,L"[!] No handler - %c\n", chOpt);
